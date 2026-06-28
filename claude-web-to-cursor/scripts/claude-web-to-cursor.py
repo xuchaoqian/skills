@@ -91,8 +91,20 @@ def _blocks_to_text(blocks: list[dict]) -> str:
             thinking = block.get("thinking", "")
             if thinking:
                 parts.append(f"<thinking>\n{thinking}\n</thinking>")
-        # tool_use and tool_result blocks are not rendered as prose in Claude web
-        # (they appear as interactive badges/widgets), so we skip them entirely.
+        elif btype == "tool_use":
+            # Render a human-readable badge matching Claude web's inline action labels.
+            name = block.get("name", "")
+            _TOOL_LABELS = {
+                "web_search": "Searched the web",
+                "web_fetch": "Fetched a page",
+                "computer": "Used computer",
+                "bash": "Ran a command",
+                "str_replace_editor": "Edited a file",
+                "artifacts": "Created an artifact",
+            }
+            label = _TOOL_LABELS.get(name) or f"Used tool: {name}"
+            parts.append(f"[{label}]")
+        # tool_result blocks contain raw tool output not shown as prose in Claude web.
     return "\n\n".join(p for p in parts if p.strip())
 
 
