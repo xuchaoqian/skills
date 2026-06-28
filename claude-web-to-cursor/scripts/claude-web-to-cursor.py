@@ -431,6 +431,9 @@ def build_composer_data(
         "promptTokenBreakdown": {},
         "promptContextUsageTree": {},
         "modelConfig": {},
+        # Used by this script to identify legacy orphan imports (not read by Cursor).
+        "_claudeSourceUuid": raw.get("uuid") or "",
+        "_claudeSourcePath": str(project_dir.resolve()),
     }
 
     allcomposers_entry = {
@@ -478,28 +481,27 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
     # Dedup key scoped to canonical project path — stable across Cursor re-indexing (new ws_hash).
     canonical_path = str(project_dir.resolve())
 
-    # Collect all orphan composer_ids from legacy duplicate imports (pre-deterministic-id era)
-    # so they can be evicted from workspace indexes during this run.
-    # Key: canonical composer_id (the one we will keep) → set of orphan ids to remove.
+    # Build (source_uuid, source_path) → {composer_ids} index by scanning global composerData.
+    # Entries written by this script carry _claudeSourceUuid and _claudeSourcePath fields.
+    # Any composer_id that maps to the same (source_uuid, source_path) as the canonical id
+    # but differs from it is a legacy orphan (created before deterministic ids were used).
+    # Key: canonical composer_id → set of orphan ids to evict from ws/global headers.
     orphans_to_remove: dict[str, set[str]] = {}
-
-    # Build subtitle → {composer_ids} index from existing workspace composerHeaders.
-    # Used only to collect legacy orphans for cleanup; not used for dedup decisions.
-    existing_by_subtitle: dict[str, set[str]] = {}
-    for ws_db in ws_dbs:
-        try:
-            with sqlite3.connect(str(ws_db), timeout=10) as wc:
-                row = wc.execute(
-                    "SELECT value FROM ItemTable WHERE key='composer.composerHeaders'"
-                ).fetchone()
-                if row:
-                    for entry in json.loads(row[0]).get("allComposers", []):
-                        st = entry.get("subtitle") or ""
-                        cid = entry.get("composerId")
-                        if st.startswith("Imported from claude.ai:") and cid:
-                            existing_by_subtitle.setdefault(st, set()).add(cid)
-        except Exception:
-            pass
+    # source_key → {composer_ids} from existing composerData
+    existing_by_source: dict[tuple[str, str], set[str]] = {}
+    with sqlite3.connect(str(global_db), timeout=10) as _scan_conn:
+        for _key, _val in _scan_conn.execute(
+            "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'"
+        ).fetchall():
+            try:
+                _d = json.loads(_val)
+                _su = _d.get("_claudeSourceUuid") or ""
+                _sp = _d.get("_claudeSourcePath") or ""
+                _cid = _d.get("composerId")
+                if _su and _sp and _cid:
+                    existing_by_source.setdefault((_su, _sp), set()).add(_cid)
+            except Exception:
+                pass
 
     phase1_fail = 0
     staged: list[tuple[str, dict, str]] = []  # (composer_id, allcomposers_entry, name)
@@ -509,22 +511,21 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
             name = (raw.get("name") or "Claude chat").strip()
             source_uuid = raw.get("uuid") or ""
 
-            # Deterministic composer_id: use the claude.ai conversation UUID directly so that
-            # reimporting always maps to the same Cursor composer key — INSERT OR REPLACE is
-            # then naturally idempotent and no separate dedup mechanism is needed.
-            # For conversations without a uuid, fall back to a stable uuid5 derived from the
-            # subtitle so the same conversation still maps to the same id across runs.
+            # Deterministic composer_id scoped to (project, conversation) so that the same
+            # Claude conversation imported into different Cursor projects gets distinct keys.
+            # uuid5 over (canonical_path + source_uuid) gives a stable, project-scoped id.
+            # For conversations without a uuid, use the subtitle as the discriminator.
             subtitle = _compute_subtitle(raw)
-            if source_uuid:
-                composer_id = source_uuid
-            else:
-                composer_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"claude-import:{canonical_path}:{subtitle}"))
+            seed = source_uuid if source_uuid else f"subtitle:{subtitle}"
+            composer_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"claude-import:{canonical_path}:{seed}"))
 
             try:
-                # Collect legacy orphans: any existing cids for the same subtitle that differ
-                # from the canonical composer_id. These will be evicted from ws indexes.
-                all_subtitle_cids: set[str] = existing_by_subtitle.get(subtitle, set())
-                orphans = all_subtitle_cids - {composer_id}
+                # Collect legacy orphans: any existing cids for (source_uuid, project) that
+                # differ from the canonical composer_id. These are remnants of old imports
+                # that used non-scoped or random composer_ids and will be evicted from indexes.
+                source_key = (source_uuid, canonical_path)
+                all_source_cids: set[str] = existing_by_source.get(source_key, set())
+                orphans = all_source_cids - {composer_id}
                 if orphans:
                     orphans_to_remove[composer_id] = orphans_to_remove.get(composer_id, set()) | orphans
 
