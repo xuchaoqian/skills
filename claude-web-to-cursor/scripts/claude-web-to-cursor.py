@@ -90,6 +90,8 @@ _TOOL_LABELS: dict[str, str] = {
 
 
 def _blocks_to_text(blocks: list[dict]) -> str:
+    if not isinstance(blocks, list):
+        return str(blocks).strip() if blocks else ""
     parts: list[str] = []
     for block in blocks:
         btype = block.get("type")
@@ -103,8 +105,8 @@ def _blocks_to_text(blocks: list[dict]) -> str:
                 parts.append(f"<thinking>\n{thinking}\n</thinking>")
         elif btype == "tool_use":
             # Render a human-readable badge matching Claude web's inline action labels.
-            tool_name = block.get("name", "")
-            label = _TOOL_LABELS.get(tool_name) or f"Used tool: {tool_name}"
+            tool_name = block.get("name") or ""
+            label = _TOOL_LABELS.get(tool_name) or (f"Used tool: {tool_name}" if tool_name else "Used a tool")
             parts.append(f"[{label}]")
         # tool_result blocks contain raw tool output not shown as prose in Claude web.
     return "\n\n".join(p for p in parts if p.strip())
@@ -259,6 +261,8 @@ def _first_human_text(raw: dict) -> str:
         if msg.get("sender") != "human":
             continue
         for block in (msg.get("content") or []):
+            if not isinstance(block, dict):
+                continue
             if block.get("type") == "text":
                 t = block.get("text", "").strip()
                 if t:
