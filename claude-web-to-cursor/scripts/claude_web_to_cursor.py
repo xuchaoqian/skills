@@ -807,7 +807,7 @@ def main() -> None:
 
     ok, fail = write_to_cursor(selected, project_dir)
 
-    print(f"\nDone: {ok} imported, {fail} failed.")
+    print(f"\nDone: {ok} imported, {fail} failed (HTML→Markdown backend: {_md_backend_name()}).")
     if ok:
         print("Reopen Cursor and check the chat sidebar for imported sessions.")
 

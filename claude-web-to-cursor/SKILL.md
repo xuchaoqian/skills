@@ -136,6 +136,9 @@ Open Cursor → same `--dir` project → check Chat/Composer sidebar.
 - **Show the script's full stdout to the user verbatim** — do not summarize it
   away. It includes the active `HTML→Markdown backend:` line (library vs. stdlib
   fallback) and per-conversation `OK`/`FAIL` results the user needs to see.
+- When reporting the import result, you **must** state which HTML→Markdown
+  backend ran. It is on the final `Done: … (HTML→Markdown backend: …)` line — quote
+  it. Never report success without naming the backend.
 - Use absolute paths for `--dir` and export file.
 - On `No Cursor workspace found`: open folder in Cursor once, quit, retry.
 - On `database is locked`: user must quit Cursor fully.
