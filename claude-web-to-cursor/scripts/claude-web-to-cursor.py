@@ -517,9 +517,17 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
             # Deterministic composer_id scoped to (project, conversation) so that the same
             # Claude conversation imported into different Cursor projects gets distinct keys.
             # uuid5 over (canonical_path + source_uuid) gives a stable, project-scoped id.
-            # For conversations without a uuid, use the subtitle as the discriminator.
+            # For conversations without a uuid, combine name + timestamps + message count +
+            # subtitle to minimise collision risk between different nameless conversations.
             subtitle = _compute_subtitle(raw)
-            seed = source_uuid if source_uuid else f"subtitle:{subtitle}"
+            if source_uuid:
+                seed = source_uuid
+            else:
+                conv_name = (raw.get("name") or "").strip()
+                created_at = raw.get("created_at") or ""
+                updated_at = raw.get("updated_at") or ""
+                msg_count = len(raw.get("chat_messages") or [])
+                seed = f"nouuid:{conv_name}:{created_at}:{updated_at}:{msg_count}:{subtitle}"
             composer_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"claude-import:{canonical_path}:{seed}"))
 
             try:
