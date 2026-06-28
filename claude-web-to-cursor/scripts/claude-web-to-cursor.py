@@ -438,9 +438,6 @@ def build_composer_data(
         "promptTokenBreakdown": {},
         "promptContextUsageTree": {},
         "modelConfig": {},
-        # Private fields used for legacy-import dedup detection (not read by Cursor).
-        "_claudeSourceUuid": raw.get("uuid") or "",
-        "_claudeSourcePath": str(project_dir.resolve()),
     }
 
     allcomposers_entry = {
@@ -524,17 +521,16 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
             # then naturally idempotent and no separate dedup mechanism is needed.
             # For conversations without a uuid, fall back to a stable uuid5 derived from the
             # subtitle so the same conversation still maps to the same id across runs.
+            subtitle = _compute_subtitle(raw)
             if source_uuid:
                 composer_id = source_uuid
             else:
-                fallback_subtitle = _compute_subtitle(raw)
-                composer_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"claude-import:{canonical_path}:{fallback_subtitle}"))
+                composer_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"claude-import:{canonical_path}:{subtitle}"))
 
             try:
                 # Collect legacy orphans: any existing cids for the same subtitle that differ
                 # from the canonical composer_id. These will be evicted from ws indexes.
-                expected_subtitle = _compute_subtitle(raw)
-                all_subtitle_cids: set[str] = existing_by_subtitle.get(expected_subtitle, set())
+                all_subtitle_cids: set[str] = existing_by_subtitle.get(subtitle, set())
                 orphans = all_subtitle_cids - {composer_id}
                 if orphans:
                     orphans_to_remove[composer_id] = orphans_to_remove.get(composer_id, set()) | orphans
@@ -594,8 +590,8 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
         all_orphans |= orphans
 
     # Phase 2a: update every workspace sidebar index.
-    # Using the same composer IDs on retry makes these writes idempotent:
-    # existing_ws_ids check prevents duplicate header entries; new_set filter deduplicates selectedComposerIds.
+    # Writes are idempotent: existing_ws_ids check prevents duplicate header entries,
+    # new_set filter prevents duplicate selectedComposerIds, orphans are evicted.
     ws_fail = 0
     for ws_db in ws_dbs:
         try:
@@ -664,8 +660,7 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
         )
         return 0, phase1_fail + len(staged)
 
-    # Phase 2b: all workspace updates succeeded — commit global composer.composerHeaders,
-    # dedup markers, and clean up pending markers atomically.
+    # Phase 2b: all workspace updates succeeded — commit global composer.composerHeaders atomically.
     with sqlite3.connect(str(global_db), timeout=10) as conn:
         conn.execute("BEGIN EXCLUSIVE")
 
