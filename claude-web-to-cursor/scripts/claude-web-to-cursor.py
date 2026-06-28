@@ -79,6 +79,16 @@ def _active_lineage(messages: list[dict]) -> list[dict]:
     return lineage
 
 
+_TOOL_LABELS: dict[str, str] = {
+    "web_search": "Searched the web",
+    "web_fetch": "Fetched a page",
+    "computer": "Used computer",
+    "bash": "Ran a command",
+    "str_replace_editor": "Edited a file",
+    "artifacts": "Created an artifact",
+}
+
+
 def _blocks_to_text(blocks: list[dict]) -> str:
     parts: list[str] = []
     for block in blocks:
@@ -93,16 +103,8 @@ def _blocks_to_text(blocks: list[dict]) -> str:
                 parts.append(f"<thinking>\n{thinking}\n</thinking>")
         elif btype == "tool_use":
             # Render a human-readable badge matching Claude web's inline action labels.
-            name = block.get("name", "")
-            _TOOL_LABELS = {
-                "web_search": "Searched the web",
-                "web_fetch": "Fetched a page",
-                "computer": "Used computer",
-                "bash": "Ran a command",
-                "str_replace_editor": "Edited a file",
-                "artifacts": "Created an artifact",
-            }
-            label = _TOOL_LABELS.get(name) or f"Used tool: {name}"
+            tool_name = block.get("name", "")
+            label = _TOOL_LABELS.get(tool_name) or f"Used tool: {tool_name}"
             parts.append(f"[{label}]")
         # tool_result blocks contain raw tool output not shown as prose in Claude web.
     return "\n\n".join(p for p in parts if p.strip())
@@ -250,18 +252,29 @@ _MINIMAL_CONTEXT = {
 # Build Cursor DB payloads from a raw conversation dict
 # ---------------------------------------------------------------------------
 
-def _compute_subtitle(raw: dict) -> str:
-    """Compute the subtitle string for a raw conversation without building the full composer payload."""
+def _first_human_text(raw: dict) -> str:
+    """Return the plain text of the first human message (text blocks only, no tool badges)."""
     lineage = _active_lineage(raw.get("chat_messages") or [])
-    first_user_text = ""
     for msg in lineage:
-        if msg.get("sender") == "human":
-            text = _message_text(msg)
-            if text:
-                first_user_text = text
-                break
-    first60 = first_user_text[:60]
-    suffix = "…" if len(first_user_text) > 60 else ""
+        if msg.get("sender") != "human":
+            continue
+        for block in (msg.get("content") or []):
+            if block.get("type") == "text":
+                t = block.get("text", "").strip()
+                if t:
+                    return t
+        # fallback: bare text field
+        t = (msg.get("text") or "").strip()
+        if t:
+            return t
+    return ""
+
+
+def _compute_subtitle(raw: dict) -> str:
+    """Compute the subtitle string for a raw conversation."""
+    first = _first_human_text(raw)
+    first60 = first[:60]
+    suffix = "…" if len(first) > 60 else ""
     return f"Imported from claude.ai: {first60}{suffix}"
 
 
