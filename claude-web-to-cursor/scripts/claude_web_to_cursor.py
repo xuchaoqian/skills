@@ -14,6 +14,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+# Ensure this script's directory is importable regardless of cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from html_to_md import html_to_markdown as _html_to_markdown
+
 
 # ---------------------------------------------------------------------------
 # Timestamp helpers
@@ -86,6 +90,8 @@ _TOOL_LABELS: dict[str, str] = {
     "bash": "Ran a command",
     "str_replace_editor": "Edited a file",
     "artifacts": "Created an artifact",
+    "visualize:read_me": "Loaded visualization guide",
+    "visualize:show_widget": "Created a visualization",
 }
 
 
@@ -104,10 +110,17 @@ def _blocks_to_text(blocks: list[dict]) -> str:
             if thinking:
                 parts.append(f"<thinking>\n{thinking}\n</thinking>")
         elif btype == "tool_use":
-            # Render a human-readable badge matching Claude web's inline action labels.
             tool_name = block.get("name") or ""
-            label = _TOOL_LABELS.get(tool_name) or (f"Used tool: {tool_name}" if tool_name else "Used a tool")
-            parts.append(f"[{label}]")
+            inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+            raw_html = inp.get("widget_code") or inp.get("html") or inp.get("content") or ""
+            md = _html_to_markdown(raw_html) if isinstance(raw_html, str) else ""
+            if md:
+                # Recovered a renderable widget/artifact (e.g. a table) as Markdown.
+                parts.append(md)
+            else:
+                # Fall back to a human-readable badge matching Claude web's inline labels.
+                label = _TOOL_LABELS.get(tool_name) or (f"Used tool: {tool_name}" if tool_name else "Used a tool")
+                parts.append(f"[{label}]")
         # tool_result blocks contain raw tool output not shown as prose in Claude web.
     return "\n\n".join(p for p in parts if p.strip())
 

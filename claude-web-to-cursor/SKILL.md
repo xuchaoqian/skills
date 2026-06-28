@@ -19,14 +19,16 @@ Skill root (this file's directory):
 .claude/skills/claude-web-to-cursor/
 ├── SKILL.md
 ├── reference.md
-└── scripts/claude-web-to-cursor.py
+└── scripts/
+    ├── claude_web_to_cursor.py
+    └── html_to_md.py          # HTML→Markdown converter (widgets/artifacts)
 ```
 
 Resolve paths from skill location:
 
 ```text
 SKILL_DIR = directory containing this SKILL.md
-SCRIPT    = $SKILL_DIR/scripts/claude-web-to-cursor.py
+SCRIPT    = $SKILL_DIR/scripts/claude_web_to_cursor.py
 ```
 
 ## Scope
@@ -52,18 +54,24 @@ Export guide if missing: claude.ai → Settings → Privacy → **Export data** 
 
 No virtual environment needed — stdlib only (Python 3.9+).
 
+**Optional fidelity upgrade:** `pip install html-to-markdown` (Python ≥3.10).
+When present, `scripts/html_to_md.py` uses it for higher-fidelity HTML→Markdown
+(full CommonMark, nested tables, colspan/rowspan); otherwise it falls back to
+the built-in stdlib converter. Not required — the fallback handles Claude's
+widget HTML well.
+
 **Project-local install** (inside a repo):
 
 ```bash
 SKILL_DIR=".claude/skills/claude-web-to-cursor"
-chmod +x "$SKILL_DIR/scripts/claude-web-to-cursor.py"
+chmod +x "$SKILL_DIR/scripts/claude_web_to_cursor.py"
 ```
 
 **Global install** (`~/.claude/skills/`):
 
 ```bash
 SKILL_DIR="$HOME/.claude/skills/claude-web-to-cursor"
-chmod +x "$SKILL_DIR/scripts/claude-web-to-cursor.py"
+chmod +x "$SKILL_DIR/scripts/claude_web_to_cursor.py"
 ```
 
 ## Migration workflow
@@ -102,14 +110,14 @@ cp "$HOME/Library/Application Support/Cursor/User/globalStorage/state.vscdb" \
 
 ```bash
 SKILL_DIR=".claude/skills/claude-web-to-cursor"
-python3 "$SKILL_DIR/scripts/claude-web-to-cursor.py" --list /tmp/claude_export/conversations.json
+python3 "$SKILL_DIR/scripts/claude_web_to_cursor.py" --list /tmp/claude_export/conversations.json
 ```
 
 ### Step 3 — Import
 
 ```bash
 SKILL_DIR=".claude/skills/claude-web-to-cursor"
-python3 "$SKILL_DIR/scripts/claude-web-to-cursor.py" \
+python3 "$SKILL_DIR/scripts/claude_web_to_cursor.py" \
   --id <UUID> \
   --dir /absolute/path/to/cursor/project \
   /tmp/claude_export/conversations.json
@@ -124,7 +132,7 @@ Open Cursor → same `--dir` project → check Chat/Composer sidebar.
 ## Agent behavior
 
 - Resolve `SKILL_DIR` from this skill's path (`.claude/skills/claude-web-to-cursor`).
-- **Execute** `scripts/claude-web-to-cursor.py`; do not reimplement DB writes.
+- **Execute** `scripts/claude_web_to_cursor.py`; do not reimplement DB writes.
 - Use absolute paths for `--dir` and export file.
 - On `No Cursor workspace found`: open folder in Cursor once, quit, retry.
 - On `database is locked`: user must quit Cursor fully.
@@ -133,7 +141,7 @@ Open Cursor → same `--dir` project → check Chat/Composer sidebar.
 ## Limitations
 
 - Active conversation branch only (edit/regenerate branches dropped)
-- `tool_use` blocks (function calls) are imported as `[tool call: <name>]` placeholders — input/output detail is not preserved
+- `tool_use` blocks carrying HTML (e.g. `visualize:show_widget` tables/artifacts) are converted to Markdown so Cursor renders them natively (converter in `scripts/html_to_md.py`); tables become GFM tables (multi-line cells use `<br>`). Tool calls with no HTML payload (e.g. `web_search`) still show a `[label]` badge, and non-convertible widgets (SVG/charts/interactive UI) degrade to their visible text
 - Artifacts UI, images, attachments may be incomplete
 - Claude Project knowledge → manual `.cursor/rules/` migration
 - Requires Python 3.9+ (no pip install needed)

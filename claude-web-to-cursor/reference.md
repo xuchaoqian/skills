@@ -31,10 +31,14 @@ Message `content[]` block types: `text`, `thinking`, `tool_use`, `tool_result`.
 Copy `.claude/skills/claude-web-to-cursor/` into any repo or `~/.claude/skills/`, then:
 
 ```bash
-chmod +x .claude/skills/claude-web-to-cursor/scripts/claude-web-to-cursor.py
+chmod +x .claude/skills/claude-web-to-cursor/scripts/claude_web_to_cursor.py
 ```
 
 No pip install required — stdlib only (Python 3.9+).
+
+Optional: `pip install html-to-markdown` (Python ≥3.10) upgrades the
+`scripts/html_to_md.py` converter to the high-fidelity library backend; without
+it the bundled stdlib fallback is used.
 
 Optional — also register for Cursor Agent:
 

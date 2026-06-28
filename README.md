@@ -27,13 +27,13 @@ Copy the `claude-web-to-cursor/` folder into your project or global skills direc
 # From this repo — project-local
 mkdir -p .claude/skills
 cp -r /path/to/skills/claude-web-to-cursor .claude/skills/
-chmod +x .claude/skills/claude-web-to-cursor/scripts/claude-web-to-cursor.py
+chmod +x .claude/skills/claude-web-to-cursor/scripts/claude_web_to_cursor.py
 ```
 
 ```bash
 # Global (Claude Code)
 cp -r claude-web-to-cursor ~/.claude/skills/
-chmod +x ~/.claude/skills/claude-web-to-cursor/scripts/claude-web-to-cursor.py
+chmod +x ~/.claude/skills/claude-web-to-cursor/scripts/claude_web_to_cursor.py
 ```
 
 Optional — register for **Cursor Agent**:
@@ -43,6 +43,10 @@ ln -sf "$(pwd)/claude-web-to-cursor" ~/.cursor/skills/claude-web-to-cursor
 ```
 
 Requirements: Python 3.9+, stdlib only (no pip install).
+
+Optional: `pip install html-to-markdown` (Python ≥3.10) for higher-fidelity
+HTML→Markdown of widgets/artifacts. When absent, a built-in stdlib converter is
+used instead — no install required.
 
 ### Export from claude.ai
 
@@ -57,10 +61,10 @@ ls /tmp/claude_export/conversations.json
 
 ### Usage
 
-Set `SCRIPT` to the path of `scripts/claude-web-to-cursor.py` (adjust if installed elsewhere):
+Set `SCRIPT` to the path of `scripts/claude_web_to_cursor.py` (adjust if installed elsewhere):
 
 ```bash
-SCRIPT="claude-web-to-cursor/scripts/claude-web-to-cursor.py"
+SCRIPT="claude-web-to-cursor/scripts/claude_web_to_cursor.py"
 EXPORT="/tmp/claude_export/conversations.json"
 PROJECT="/absolute/path/to/your/cursor/project"   # must match the folder opened in Cursor
 ```
@@ -120,7 +124,7 @@ cp "$HOME/Library/Application Support/Cursor/User/globalStorage/state.vscdb" \
 ### Limitations
 
 - Imports the active conversation branch only (edit/regenerate branches are dropped)
-- `tool_use` blocks appear as `[tool call: <name>]` placeholders — input/output detail is not preserved
+- `tool_use` blocks carrying HTML (e.g. `visualize:show_widget` tables/artifacts) are converted to Markdown and render natively in Cursor; tool calls without an HTML payload (e.g. `web_search`) show a `[label]` badge, and non-convertible widgets (SVG/charts) degrade to their visible text
 - Artifacts UI, images, and attachments may be incomplete
 - Claude Project knowledge must be migrated manually to `.cursor/rules/`
 
