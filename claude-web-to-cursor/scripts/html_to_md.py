@@ -15,9 +15,18 @@ shadow the library package of that name.
 
 from __future__ import annotations
 
+import os
+import sys
 from html.parser import HTMLParser
 
-# Optional high-fidelity backend. Absent on a stdlib-only install.
+# Optional high-fidelity backend. Prefer a vendored copy bundled under
+# scripts/_vendor/ (so the skill is self-contained, no system install needed),
+# then fall back to any system-installed html_to_markdown, then to the stdlib
+# parser below.
+_VENDOR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_vendor")
+if os.path.isdir(_VENDOR_DIR) and _VENDOR_DIR not in sys.path:
+    sys.path.insert(0, _VENDOR_DIR)
+
 try:
     from html_to_markdown import convert as _lib_convert, ConversionOptions as _LibOptions
     _HAVE_LIB = True

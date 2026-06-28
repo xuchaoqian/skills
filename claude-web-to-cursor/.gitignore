@@ -1,2 +1,6 @@
 scripts/__pycache__/
 *.pyc
+
+# Vendored optional html-to-markdown library (platform-specific native wheel).
+# Install locally with: pip install --target scripts/_vendor html-to-markdown
+scripts/_vendor/
