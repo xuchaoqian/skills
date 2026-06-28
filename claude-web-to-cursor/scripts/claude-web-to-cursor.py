@@ -284,7 +284,10 @@ def build_composer_data(
         sender = msg.get("sender")
         btype_int = 1 if sender == "human" else 2
         msg_dt = _parse_ts(msg.get("created_at")) or now
-        bubble_id = str(uuid.uuid4())
+        # Deterministic bubble_id derived from the message's own uuid so that reimporting
+        # the same conversation replaces (not duplicates) existing bubble records.
+        msg_uuid = msg.get("uuid") or ""
+        bubble_id = msg_uuid if msg_uuid else str(uuid.uuid4())
         text = _message_text(msg)
 
         if not text:
@@ -349,7 +352,7 @@ def build_composer_data(
         "uri": {
             "$mid": 1,
             "fsPath": str(project_dir),
-            "external": f"file://{project_dir}",
+            "external": project_dir.as_uri(),
             "path": str(project_dir),
             "scheme": "file",
         },
@@ -509,7 +512,7 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
             pass
 
     phase1_fail = 0
-    staged: list[tuple[str, str, dict, str]] = []  # (composer_id, pending_key, allcomposers_entry, name)
+    staged: list[tuple[str, dict, str]] = []  # (composer_id, allcomposers_entry, name)
 
     with sqlite3.connect(str(global_db), timeout=10) as conn:
         for raw in conversations:
@@ -527,8 +530,6 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
                 fallback_subtitle = _compute_subtitle(raw)
                 composer_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"claude-import:{canonical_path}:{fallback_subtitle}"))
 
-            pending_key = f"claudePending:{canonical_path}:{composer_id}"
-
             try:
                 # Collect legacy orphans: any existing cids for the same subtitle that differ
                 # from the canonical composer_id. These will be evicted from ws indexes.
@@ -538,53 +539,29 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
                 if orphans:
                     orphans_to_remove[composer_id] = orphans_to_remove.get(composer_id, set()) | orphans
 
-                # Partially done (workspace update failed on a previous run).
-                recovered = False
-                allcomposers_entry: dict = {}
-                if pending_key:
-                    row = conn.execute(
-                        "SELECT value FROM cursorDiskKV WHERE key=?", (pending_key,)
-                    ).fetchone()
-                    if row:
-                        try:
-                            pd = json.loads(row[0])
-                            if pd.get("composer_id") == composer_id:
-                                allcomposers_entry = pd["allcomposers_entry"]
-                                recovered = True
-                                print(f"RESUME {name!r}  (reusing staged composer {composer_id})")
-                        except Exception:
-                            pass  # corrupt pending entry — fall through to fresh import
+                composer_data, bubbles, allcomposers_entry = build_composer_data(
+                    raw, composer_id, ws_hash, project_dir
+                )
 
-                if not recovered:
-                    composer_data, bubbles, allcomposers_entry = build_composer_data(
-                        raw, composer_id, ws_hash, project_dir
-                    )
+                # Phase 1: write composerData + bubbles atomically.
+                # global composer.composerHeaders is deferred to phase 2b so a workspace
+                # failure leaves no orphaned header entry.
+                # INSERT OR REPLACE is idempotent: same composer_id and bubble_ids are
+                # always produced for the same conversation, so reimporting is safe.
+                conn.execute("BEGIN EXCLUSIVE")
 
-                    # Phase 1: write composerData + bubbles + pending marker atomically.
-                    # global composer.composerHeaders is deferred to phase 2b so a workspace
-                    # failure leaves no orphaned header entry.
-                    conn.execute("BEGIN EXCLUSIVE")
-
+                conn.execute(
+                    "INSERT OR REPLACE INTO cursorDiskKV(key, value) VALUES (?, ?)",
+                    (f"composerData:{composer_id}", json.dumps(composer_data, ensure_ascii=False)),
+                )
+                for bkey, bval in bubbles:
                     conn.execute(
                         "INSERT OR REPLACE INTO cursorDiskKV(key, value) VALUES (?, ?)",
-                        (f"composerData:{composer_id}", json.dumps(composer_data, ensure_ascii=False)),
+                        (bkey, bval),
                     )
-                    for bkey, bval in bubbles:
-                        conn.execute(
-                            "INSERT OR REPLACE INTO cursorDiskKV(key, value) VALUES (?, ?)",
-                            (bkey, bval),
-                        )
-                    conn.execute(
-                        "INSERT OR REPLACE INTO cursorDiskKV(key, value) VALUES (?, ?)",
-                        (pending_key, json.dumps(
-                            {"composer_id": composer_id, "allcomposers_entry": allcomposers_entry},
-                            ensure_ascii=False,
-                        )),
-                    )
-                    conn.execute("COMMIT")
-                    print(f"STAGED  {name!r}  -> composer {composer_id}")
+                conn.execute("COMMIT")
 
-                staged.append((composer_id, pending_key, allcomposers_entry, name))
+                staged.append((composer_id, allcomposers_entry, name))
 
             except sqlite3.OperationalError as e:
                 try:
@@ -607,8 +584,8 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
     if not staged:
         return 0, phase1_fail
 
-    new_ids = [cid for cid, _, _, _ in staged]
-    new_allcomposers_entries = [entry for _, _, entry, _ in staged]
+    new_ids = [cid for cid, _, _ in staged]
+    new_allcomposers_entries = [entry for _, entry, _ in staged]
     new_set = set(new_ids)
 
     # Flat set of all orphan composer_ids to evict from ws indexes.
@@ -716,12 +693,9 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
             ("composer.composerHeaders", json.dumps(headers_data, ensure_ascii=False)),
         )
 
-        for composer_id, pending_key, _, _ in staged:
-            conn.execute("DELETE FROM cursorDiskKV WHERE key=?", (pending_key,))
-
         conn.execute("COMMIT")
 
-    for composer_id, _, _, name in staged:
+    for composer_id, _, name in staged:
         print(f"OK  {name!r}  -> Cursor composer {composer_id}")
 
     return len(staged), phase1_fail
