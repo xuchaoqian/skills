@@ -523,11 +523,14 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
                 # Collect legacy orphans: any existing cids for (source_uuid, project) that
                 # differ from the canonical composer_id. These are remnants of old imports
                 # that used non-scoped or random composer_ids and will be evicted from indexes.
-                source_key = (source_uuid, canonical_path)
-                all_source_cids: set[str] = existing_by_source.get(source_key, set())
-                orphans = all_source_cids - {composer_id}
-                if orphans:
-                    orphans_to_remove[composer_id] = orphans_to_remove.get(composer_id, set()) | orphans
+                # Only applies when source_uuid is present — without it every nameless
+                # conversation would share the same key ("", path) and wrongly mark each
+                # other as orphans.
+                if source_uuid:
+                    all_source_cids: set[str] = existing_by_source.get((source_uuid, canonical_path), set())
+                    orphans = all_source_cids - {composer_id}
+                    if orphans:
+                        orphans_to_remove[composer_id] = orphans_to_remove.get(composer_id, set()) | orphans
 
                 composer_data, bubbles, allcomposers_entry = build_composer_data(
                     raw, composer_id, ws_hash, project_dir, subtitle
