@@ -485,9 +485,13 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
     # Dedup key scoped to canonical project path — stable across Cursor re-indexing (new ws_hash).
     canonical_path = str(project_dir.resolve())
 
-    # Build subtitle→{composer_ids} index from existing workspace composerHeaders.
-    # Stores ALL composer_ids per subtitle to detect and remove duplicates.
-    # This catches imports that predate the claudeSourceId key mechanism (no dedup key was written).
+    # Collect all orphan composer_ids from legacy duplicate imports (pre-deterministic-id era)
+    # so they can be evicted from workspace indexes during this run.
+    # Key: canonical composer_id (the one we will keep) → set of orphan ids to remove.
+    orphans_to_remove: dict[str, set[str]] = {}
+
+    # Build subtitle → {composer_ids} index from existing workspace composerHeaders.
+    # Used only to collect legacy orphans for cleanup; not used for dedup decisions.
     existing_by_subtitle: dict[str, set[str]] = {}
     for ws_db in ws_dbs:
         try:
@@ -505,54 +509,36 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
             pass
 
     phase1_fail = 0
-    staged: list[tuple[str, str, str, dict, str]] = []  # (source_key, pending_key, composer_id, allcomposers_entry, name)
-    # Maps overwritten composer_id -> set of orphan composer_ids it replaces (for cleanup).
-    orphans_to_remove: dict[str, set[str]] = {}
+    staged: list[tuple[str, str, dict, str]] = []  # (composer_id, pending_key, allcomposers_entry, name)
 
     with sqlite3.connect(str(global_db), timeout=10) as conn:
         for raw in conversations:
             name = (raw.get("name") or "Claude chat").strip()
             source_uuid = raw.get("uuid") or ""
-            # When uuid is missing, fall back to a subtitle-based dedup key so conversations
-            # without a uuid are still deduplicated and overwrite rather than duplicate.
-            if source_uuid:
-                source_key  = f"claudeSourceId:{canonical_path}:{source_uuid}"
-                pending_key = f"claudePending:{canonical_path}:{source_uuid}"
-            else:
-                fallback = _compute_subtitle(raw)
-                source_key  = f"claudeSourceId:{canonical_path}:subtitle:{fallback}" if fallback else ""
-                pending_key = f"claudePending:{canonical_path}:subtitle:{fallback}" if fallback else ""
-            composer_id = str(uuid.uuid4())
-            try:
-                # Overwrite: recover the existing composer_id so all downstream writes reuse
-                # the same ID (idempotent workspace updates, no new header entry).
-                # Check 1: claudeSourceId key (written by current code on successful import).
-                existing_cid: str | None = None
-                if source_key:
-                    row = conn.execute(
-                        "SELECT value FROM cursorDiskKV WHERE key=?", (source_key,)
-                    ).fetchone()
-                    if row:
-                        existing_cid = row[0]
 
-                # Check 2: subtitle index (catches imports that predate the claudeSourceId key).
+            # Deterministic composer_id: use the claude.ai conversation UUID directly so that
+            # reimporting always maps to the same Cursor composer key — INSERT OR REPLACE is
+            # then naturally idempotent and no separate dedup mechanism is needed.
+            # For conversations without a uuid, fall back to a stable uuid5 derived from the
+            # subtitle so the same conversation still maps to the same id across runs.
+            if source_uuid:
+                composer_id = source_uuid
+            else:
+                fallback_subtitle = _compute_subtitle(raw)
+                composer_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"claude-import:{canonical_path}:{fallback_subtitle}"))
+
+            pending_key = f"claudePending:{canonical_path}:{composer_id}"
+
+            try:
+                # Collect legacy orphans: any existing cids for the same subtitle that differ
+                # from the canonical composer_id. These will be evicted from ws indexes.
                 expected_subtitle = _compute_subtitle(raw)
                 all_subtitle_cids: set[str] = existing_by_subtitle.get(expected_subtitle, set())
-                if existing_cid is None and all_subtitle_cids:
-                    # Pick any one as the canonical composer; extras are orphans to clean up.
-                    existing_cid = next(iter(all_subtitle_cids))
+                orphans = all_subtitle_cids - {composer_id}
+                if orphans:
+                    orphans_to_remove[composer_id] = orphans_to_remove.get(composer_id, set()) | orphans
 
-                if existing_cid is not None:
-                    composer_id = existing_cid
-                    # All other cids with the same subtitle are orphan duplicates — remove them
-                    # from ws selectedComposerIds/composerHeaders so the sidebar de-duplicates.
-                    orphans = all_subtitle_cids - {composer_id}
-                    if orphans:
-                        orphans_to_remove[composer_id] = orphans_to_remove.get(composer_id, set()) | orphans
-                    print(f"OVERWRITE {name!r}  (reusing composer {composer_id})")
-
-                # Partially done (workspace update failed on a previous run) — recover the
-                # existing composer_id so workspace updates stay idempotent and no orphan is created.
+                # Partially done (workspace update failed on a previous run).
                 recovered = False
                 allcomposers_entry: dict = {}
                 if pending_key:
@@ -562,10 +548,10 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
                     if row:
                         try:
                             pd = json.loads(row[0])
-                            composer_id = pd["composer_id"]
-                            allcomposers_entry = pd["allcomposers_entry"]
-                            recovered = True
-                            print(f"RESUME {name!r}  (reusing staged composer {composer_id})")
+                            if pd.get("composer_id") == composer_id:
+                                allcomposers_entry = pd["allcomposers_entry"]
+                                recovered = True
+                                print(f"RESUME {name!r}  (reusing staged composer {composer_id})")
                         except Exception:
                             pass  # corrupt pending entry — fall through to fresh import
 
@@ -575,8 +561,8 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
                     )
 
                     # Phase 1: write composerData + bubbles + pending marker atomically.
-                    # global composer.composerHeaders is NOT written here — deferred to phase 2b
-                    # so a workspace failure leaves no orphaned header entry.
+                    # global composer.composerHeaders is deferred to phase 2b so a workspace
+                    # failure leaves no orphaned header entry.
                     conn.execute("BEGIN EXCLUSIVE")
 
                     conn.execute(
@@ -588,18 +574,17 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
                             "INSERT OR REPLACE INTO cursorDiskKV(key, value) VALUES (?, ?)",
                             (bkey, bval),
                         )
-                    if pending_key:
-                        conn.execute(
-                            "INSERT OR REPLACE INTO cursorDiskKV(key, value) VALUES (?, ?)",
-                            (pending_key, json.dumps(
-                                {"composer_id": composer_id, "allcomposers_entry": allcomposers_entry},
-                                ensure_ascii=False,
-                            )),
-                        )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO cursorDiskKV(key, value) VALUES (?, ?)",
+                        (pending_key, json.dumps(
+                            {"composer_id": composer_id, "allcomposers_entry": allcomposers_entry},
+                            ensure_ascii=False,
+                        )),
+                    )
                     conn.execute("COMMIT")
                     print(f"STAGED  {name!r}  -> composer {composer_id}")
 
-                staged.append((source_key, pending_key, composer_id, allcomposers_entry, name))
+                staged.append((composer_id, pending_key, allcomposers_entry, name))
 
             except sqlite3.OperationalError as e:
                 try:
@@ -622,8 +607,8 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
     if not staged:
         return 0, phase1_fail
 
-    new_ids = [cid for _, _, cid, _, _ in staged]
-    new_allcomposers_entries = [entry for _, _, _, entry, _ in staged]
+    new_ids = [cid for cid, _, _, _ in staged]
+    new_allcomposers_entries = [entry for _, _, entry, _ in staged]
     new_set = set(new_ids)
 
     # Flat set of all orphan composer_ids to evict from ws indexes.
@@ -731,18 +716,12 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
             ("composer.composerHeaders", json.dumps(headers_data, ensure_ascii=False)),
         )
 
-        for source_key, pending_key, composer_id, _, _ in staged:
-            if source_key:
-                conn.execute(
-                    "INSERT OR REPLACE INTO cursorDiskKV(key, value) VALUES (?, ?)",
-                    (source_key, composer_id),
-                )
-            if pending_key:
-                conn.execute("DELETE FROM cursorDiskKV WHERE key=?", (pending_key,))
+        for composer_id, pending_key, _, _ in staged:
+            conn.execute("DELETE FROM cursorDiskKV WHERE key=?", (pending_key,))
 
         conn.execute("COMMIT")
 
-    for _, _, composer_id, _, name in staged:
+    for composer_id, _, _, name in staged:
         print(f"OK  {name!r}  -> Cursor composer {composer_id}")
 
     return len(staged), phase1_fail
