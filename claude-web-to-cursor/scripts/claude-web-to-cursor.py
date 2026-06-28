@@ -485,9 +485,10 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
     # Dedup key scoped to canonical project path — stable across Cursor re-indexing (new ws_hash).
     canonical_path = str(project_dir.resolve())
 
-    # Build subtitle→composer_id index from existing workspace composerHeaders.
+    # Build subtitle→{composer_ids} index from existing workspace composerHeaders.
+    # Stores ALL composer_ids per subtitle to detect and remove duplicates.
     # This catches imports that predate the claudeSourceId key mechanism (no dedup key was written).
-    existing_by_subtitle: dict[str, str] = {}
+    existing_by_subtitle: dict[str, set[str]] = {}
     for ws_db in ws_dbs:
         try:
             with sqlite3.connect(str(ws_db), timeout=10) as wc:
@@ -498,13 +499,15 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
                     for entry in json.loads(row[0]).get("allComposers", []):
                         st = entry.get("subtitle") or ""
                         cid = entry.get("composerId")
-                        if st.startswith("Imported from claude.ai:") and cid and st not in existing_by_subtitle:
-                            existing_by_subtitle[st] = cid
+                        if st.startswith("Imported from claude.ai:") and cid:
+                            existing_by_subtitle.setdefault(st, set()).add(cid)
         except Exception:
             pass
 
     phase1_fail = 0
     staged: list[tuple[str, str, str, dict, str]] = []  # (source_key, pending_key, composer_id, allcomposers_entry, name)
+    # Maps overwritten composer_id -> set of orphan composer_ids it replaces (for cleanup).
+    orphans_to_remove: dict[str, set[str]] = {}
 
     with sqlite3.connect(str(global_db), timeout=10) as conn:
         for raw in conversations:
@@ -533,13 +536,19 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
                         existing_cid = row[0]
 
                 # Check 2: subtitle index (catches imports that predate the claudeSourceId key).
-                if existing_cid is None:
-                    expected_subtitle = _compute_subtitle(raw)
-                    if expected_subtitle in existing_by_subtitle:
-                        existing_cid = existing_by_subtitle[expected_subtitle]
+                expected_subtitle = _compute_subtitle(raw)
+                all_subtitle_cids: set[str] = existing_by_subtitle.get(expected_subtitle, set())
+                if existing_cid is None and all_subtitle_cids:
+                    # Pick any one as the canonical composer; extras are orphans to clean up.
+                    existing_cid = next(iter(all_subtitle_cids))
 
                 if existing_cid is not None:
                     composer_id = existing_cid
+                    # All other cids with the same subtitle are orphan duplicates — remove them
+                    # from ws selectedComposerIds/composerHeaders so the sidebar de-duplicates.
+                    orphans = all_subtitle_cids - {composer_id}
+                    if orphans:
+                        orphans_to_remove[composer_id] = orphans_to_remove.get(composer_id, set()) | orphans
                     print(f"OVERWRITE {name!r}  (reusing composer {composer_id})")
 
                 # Partially done (workspace update failed on a previous run) — recover the
@@ -617,6 +626,11 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
     new_allcomposers_entries = [entry for _, _, _, entry, _ in staged]
     new_set = set(new_ids)
 
+    # Flat set of all orphan composer_ids to evict from ws indexes.
+    all_orphans: set[str] = set()
+    for orphans in orphans_to_remove.values():
+        all_orphans |= orphans
+
     # Phase 2a: update every workspace sidebar index.
     # Using the same composer IDs on retry makes these writes idempotent:
     # existing_ws_ids check prevents duplicate header entries; new_set filter deduplicates selectedComposerIds.
@@ -640,9 +654,9 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
                         "lastFocusedComposerIds": [],
                     }
                 existing_sel = cd.get("selectedComposerIds") or []
-                cd["selectedComposerIds"] = new_ids + [i for i in existing_sel if i not in new_set]
+                cd["selectedComposerIds"] = new_ids + [i for i in existing_sel if i not in new_set and i not in all_orphans]
                 lf = cd.get("lastFocusedComposerIds") or []
-                cd["lastFocusedComposerIds"] = new_ids + [i for i in lf if i not in new_set]
+                cd["lastFocusedComposerIds"] = new_ids + [i for i in lf if i not in new_set and i not in all_orphans]
                 ws_conn.execute(
                     "INSERT OR REPLACE INTO ItemTable(key, value) VALUES (?, ?)",
                     ("composer.composerData", json.dumps(cd, ensure_ascii=False)),
@@ -653,10 +667,22 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
                     "SELECT value FROM ItemTable WHERE key='composer.composerHeaders'"
                 ).fetchone()
                 ws_headers = json.loads(row2[0]) if row2 else {"allComposers": []}
-                existing_ws_ids = {c.get("composerId") for c in ws_headers.get("allComposers", [])}
+                # Remove orphan entries and update the canonical entry for overwrites.
+                ws_headers["allComposers"] = [
+                    c for c in ws_headers.get("allComposers", [])
+                    if c.get("composerId") not in all_orphans
+                ]
+                existing_ws_ids = {c.get("composerId") for c in ws_headers["allComposers"]}
                 for entry in reversed(new_allcomposers_entries):
-                    if entry.get("composerId") not in existing_ws_ids:
-                        ws_headers.setdefault("allComposers", []).insert(0, entry)
+                    cid = entry.get("composerId")
+                    if cid not in existing_ws_ids:
+                        ws_headers["allComposers"].insert(0, entry)
+                    else:
+                        # Update the existing entry in-place (name/subtitle may have changed).
+                        ws_headers["allComposers"] = [
+                            entry if c.get("composerId") == cid else c
+                            for c in ws_headers["allComposers"]
+                        ]
                 ws_conn.execute(
                     "INSERT OR REPLACE INTO ItemTable(key, value) VALUES (?, ?)",
                     ("composer.composerHeaders", json.dumps(ws_headers, ensure_ascii=False)),
@@ -685,10 +711,21 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
             "SELECT value FROM ItemTable WHERE key='composer.composerHeaders'"
         ).fetchone()
         headers_data = json.loads(row[0]) if row else {"allComposers": []}
-        existing_global_ids = {c.get("composerId") for c in headers_data.get("allComposers", [])}
+        # Remove orphan duplicates from global index.
+        headers_data["allComposers"] = [
+            c for c in headers_data.get("allComposers", [])
+            if c.get("composerId") not in all_orphans
+        ]
+        existing_global_ids = {c.get("composerId") for c in headers_data["allComposers"]}
         for entry in reversed(new_allcomposers_entries):
-            if entry.get("composerId") not in existing_global_ids:
+            cid = entry.get("composerId")
+            if cid not in existing_global_ids:
                 headers_data["allComposers"].insert(0, entry)
+            else:
+                headers_data["allComposers"] = [
+                    entry if c.get("composerId") == cid else c
+                    for c in headers_data["allComposers"]
+                ]
         conn.execute(
             "INSERT OR REPLACE INTO ItemTable(key, value) VALUES (?, ?)",
             ("composer.composerHeaders", json.dumps(headers_data, ensure_ascii=False)),
