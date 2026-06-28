@@ -30,8 +30,21 @@ if os.path.isdir(_VENDOR_DIR) and _VENDOR_DIR not in sys.path:
 try:
     from html_to_markdown import convert as _lib_convert, ConversionOptions as _LibOptions
     _HAVE_LIB = True
+    try:
+        from importlib.metadata import version as _pkg_version
+        _LIB_VERSION = _pkg_version("html-to-markdown")
+    except Exception:
+        _LIB_VERSION = ""
 except Exception:
     _HAVE_LIB = False
+    _LIB_VERSION = ""
+
+
+def backend_name() -> str:
+    """Human-readable name of the active HTML→Markdown backend."""
+    if _HAVE_LIB:
+        return f"html_to_markdown library{(' v' + _LIB_VERSION) if _LIB_VERSION else ''}"
+    return "built-in stdlib parser"
 
 
 # Defensive caps so a pathological widget can't produce runaway output.

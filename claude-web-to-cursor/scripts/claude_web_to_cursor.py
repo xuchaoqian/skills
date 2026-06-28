@@ -16,7 +16,7 @@ from urllib.parse import unquote, urlparse
 
 # Ensure this script's directory is importable regardless of cwd.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from html_to_md import html_to_markdown as _html_to_markdown
+from html_to_md import html_to_markdown as _html_to_markdown, backend_name as _md_backend_name
 
 
 # ---------------------------------------------------------------------------
@@ -802,6 +802,7 @@ def main() -> None:
         raise SystemExit("No matching conversations found.")
 
     print(f"Target project: {project_dir}")
+    print(f"HTML→Markdown backend: {_md_backend_name()}")
     print("Tip: quit Cursor before import to avoid DB conflicts.\n")
 
     ok, fail = write_to_cursor(selected, project_dir)
