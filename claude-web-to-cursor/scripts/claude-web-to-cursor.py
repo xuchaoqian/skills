@@ -280,14 +280,17 @@ def build_composer_data(
     headers: list[dict] = []
     bubbles: list[tuple[str, str]] = []
 
-    for msg in lineage:
+    for msg_index, msg in enumerate(lineage):
         sender = msg.get("sender")
         btype_int = 1 if sender == "human" else 2
         msg_dt = _parse_ts(msg.get("created_at")) or now
-        # Deterministic bubble_id derived from the message's own uuid so that reimporting
-        # the same conversation replaces (not duplicates) existing bubble records.
+        # Deterministic bubble_id: prefer the message's own uuid; fall back to a uuid5
+        # derived from (composer_id, position) so reimporting is always idempotent even
+        # when the message has no uuid.
         msg_uuid = msg.get("uuid") or ""
-        bubble_id = msg_uuid if msg_uuid else str(uuid.uuid4())
+        bubble_id = msg_uuid if msg_uuid else str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"{composer_id}:msg:{msg_index}")
+        )
         text = _message_text(msg)
 
         if not text:
@@ -649,13 +652,14 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
             ws_fail += 1
 
     if ws_fail:
+        n_staged = len(staged)
         print(
             f"\nWarning: {ws_fail} workspace sidebar index update(s) failed — "
-            "sessions are staged in the global DB. "
+            f"{n_staged} session(s) are staged in the global DB but not yet visible in Cursor. "
             "Ensure Cursor is fully quit and retry; the same session IDs will be reused automatically.",
             file=sys.stderr,
         )
-        return 0, phase1_fail + ws_fail
+        return 0, phase1_fail + n_staged
 
     # Phase 2b: all workspace updates succeeded — commit global composer.composerHeaders atomically.
     with sqlite3.connect(str(global_db), timeout=10) as conn:
