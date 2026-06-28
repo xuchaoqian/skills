@@ -265,6 +265,7 @@ def build_composer_data(
     composer_id: str,
     ws_hash: str,
     project_dir: Path,
+    subtitle: str,
 ) -> tuple[dict, list[tuple[str, str]], dict]:
     """Return (composer_data, bubble_kv_pairs, allcomposers_entry)."""
     name = (raw.get("name") or "Claude chat").strip() or "Claude chat"
@@ -278,7 +279,6 @@ def build_composer_data(
 
     headers: list[dict] = []
     bubbles: list[tuple[str, str]] = []
-    first_user_text = ""
 
     for msg in lineage:
         sender = msg.get("sender")
@@ -292,9 +292,6 @@ def build_composer_data(
 
         if not text:
             continue
-
-        if sender == "human" and not first_user_text:
-            first_user_text = text
 
         headers.append({
             "bubbleId": bubble_id,
@@ -342,10 +339,6 @@ def build_composer_data(
             f"bubbleId:{composer_id}:{bubble_id}",
             json.dumps(bubble, ensure_ascii=False),
         ))
-
-    first60 = first_user_text[:60]
-    suffix = "…" if len(first_user_text) > 60 else ""
-    subtitle = f"Imported from claude.ai: {first60}{suffix}"
 
     ws_id_obj = {
         "id": ws_hash,
@@ -536,7 +529,7 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
                     orphans_to_remove[composer_id] = orphans_to_remove.get(composer_id, set()) | orphans
 
                 composer_data, bubbles, allcomposers_entry = build_composer_data(
-                    raw, composer_id, ws_hash, project_dir
+                    raw, composer_id, ws_hash, project_dir, subtitle
                 )
 
                 # Phase 1: write composerData + bubbles atomically.
@@ -658,7 +651,7 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
             "Ensure Cursor is fully quit and retry; the same session IDs will be reused automatically.",
             file=sys.stderr,
         )
-        return 0, phase1_fail + len(staged)
+        return 0, phase1_fail + ws_fail
 
     # Phase 2b: all workspace updates succeeded — commit global composer.composerHeaders atomically.
     with sqlite3.connect(str(global_db), timeout=10) as conn:
