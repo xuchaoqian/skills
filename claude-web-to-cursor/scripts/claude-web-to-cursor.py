@@ -245,6 +245,21 @@ _MINIMAL_CONTEXT = {
 # Build Cursor DB payloads from a raw conversation dict
 # ---------------------------------------------------------------------------
 
+def _compute_subtitle(raw: dict) -> str:
+    """Compute the subtitle string for a raw conversation without building the full composer payload."""
+    lineage = _active_lineage(raw.get("chat_messages") or [])
+    first_user_text = ""
+    for msg in lineage:
+        if msg.get("sender") == "human":
+            text = _message_text(msg)
+            if text:
+                first_user_text = text
+                break
+    first60 = first_user_text[:60]
+    suffix = "…" if len(first_user_text) > 60 else ""
+    return f"Imported from claude.ai: {first60}{suffix}"
+
+
 def build_composer_data(
     raw: dict,
     composer_id: str,
@@ -420,6 +435,9 @@ def build_composer_data(
         "promptTokenBreakdown": {},
         "promptContextUsageTree": {},
         "modelConfig": {},
+        # Private fields used for legacy-import dedup detection (not read by Cursor).
+        "_claudeSourceUuid": raw.get("uuid") or "",
+        "_claudeSourcePath": str(project_dir.resolve()),
     }
 
     allcomposers_entry = {
@@ -467,6 +485,24 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
     # Dedup key scoped to canonical project path — stable across Cursor re-indexing (new ws_hash).
     canonical_path = str(project_dir.resolve())
 
+    # Build subtitle→composer_id index from existing workspace composerHeaders.
+    # This catches imports that predate the claudeSourceId key mechanism (no dedup key was written).
+    existing_by_subtitle: dict[str, str] = {}
+    for ws_db in ws_dbs:
+        try:
+            with sqlite3.connect(str(ws_db), timeout=10) as wc:
+                row = wc.execute(
+                    "SELECT value FROM ItemTable WHERE key='composer.composerHeaders'"
+                ).fetchone()
+                if row:
+                    for entry in json.loads(row[0]).get("allComposers", []):
+                        st = entry.get("subtitle") or ""
+                        cid = entry.get("composerId")
+                        if st.startswith("Imported from claude.ai:") and cid and st not in existing_by_subtitle:
+                            existing_by_subtitle[st] = cid
+        except Exception:
+            pass
+
     phase1_fail = 0
     staged: list[tuple[str, str, str, dict, str]] = []  # (source_key, pending_key, composer_id, allcomposers_entry, name)
 
@@ -474,18 +510,37 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
         for raw in conversations:
             name = (raw.get("name") or "Claude chat").strip()
             source_uuid = raw.get("uuid") or ""
-            source_key  = f"claudeSourceId:{canonical_path}:{source_uuid}" if source_uuid else ""
-            pending_key = f"claudePending:{canonical_path}:{source_uuid}" if source_uuid else ""
+            # When uuid is missing, fall back to a subtitle-based dedup key so conversations
+            # without a uuid are still deduplicated and overwrite rather than duplicate.
+            if source_uuid:
+                source_key  = f"claudeSourceId:{canonical_path}:{source_uuid}"
+                pending_key = f"claudePending:{canonical_path}:{source_uuid}"
+            else:
+                fallback = _compute_subtitle(raw)
+                source_key  = f"claudeSourceId:{canonical_path}:subtitle:{fallback}" if fallback else ""
+                pending_key = f"claudePending:{canonical_path}:subtitle:{fallback}" if fallback else ""
             composer_id = str(uuid.uuid4())
             try:
-                # Fully done — skip.
+                # Overwrite: recover the existing composer_id so all downstream writes reuse
+                # the same ID (idempotent workspace updates, no new header entry).
+                # Check 1: claudeSourceId key (written by current code on successful import).
+                existing_cid: str | None = None
                 if source_key:
                     row = conn.execute(
                         "SELECT value FROM cursorDiskKV WHERE key=?", (source_key,)
                     ).fetchone()
                     if row:
-                        print(f"SKIP {name!r}  (already imported as composer {row[0]})")
-                        continue
+                        existing_cid = row[0]
+
+                # Check 2: subtitle index (catches imports that predate the claudeSourceId key).
+                if existing_cid is None:
+                    expected_subtitle = _compute_subtitle(raw)
+                    if expected_subtitle in existing_by_subtitle:
+                        existing_cid = existing_by_subtitle[expected_subtitle]
+
+                if existing_cid is not None:
+                    composer_id = existing_cid
+                    print(f"OVERWRITE {name!r}  (reusing composer {composer_id})")
 
                 # Partially done (workspace update failed on a previous run) — recover the
                 # existing composer_id so workspace updates stay idempotent and no orphan is created.
