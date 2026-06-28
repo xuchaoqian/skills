@@ -91,15 +91,8 @@ def _blocks_to_text(blocks: list[dict]) -> str:
             thinking = block.get("thinking", "")
             if thinking:
                 parts.append(f"<thinking>\n{thinking}\n</thinking>")
-        elif btype == "tool_use":
-            name = block.get("name", "unknown")
-            parts.append(f"[tool call: {name}]")
-        elif btype == "tool_result":
-            content = block.get("content")
-            if isinstance(content, str) and content.strip():
-                parts.append(content)
-            elif isinstance(content, list):
-                parts.append(_blocks_to_text(content))
+        # tool_use and tool_result blocks are not rendered as prose in Claude web
+        # (they appear as interactive badges/widgets), so we skip them entirely.
     return "\n\n".join(p for p in parts if p.strip())
 
 
