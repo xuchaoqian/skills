@@ -11,7 +11,7 @@ disable-model-invocation: true
 
 # Claude Web → Cursor Native Sessions
 
-Import [claude.ai](https://claude.ai) `conversations.json` into **Cursor's chat sidebar**. This is not Markdown `@` context — it writes Cursor's local SQLite (`state.vscdb`) using a compatible subset of Cursor's internal format (verified against Cursor 3.9.8 local DB; future schema changes may require updates).
+Import [claude.ai](https://claude.ai) `conversations.json` into **Cursor's chat sidebar**. This is not Markdown `@` context — it writes Cursor's local SQLite (`state.vscdb`) using a compatible subset of Cursor's internal format (verified against Cursor 3.9.16 local DB; future schema changes may require updates).
 
 Skill root (this file's directory):
 
@@ -151,7 +151,7 @@ Open Cursor → same `--dir` project → check Chat/Composer sidebar.
 - Artifacts UI, images, attachments may be incomplete
 - Claude Project knowledge → manual `.cursor/rules/` migration
 - Requires Python 3.9+ (no pip install needed)
-- Writes the legacy `ItemTable`-based index; if Cursor migrates to its new `composerHeaders` table in a future release, a script update will be needed
+- Writes to the `ItemTable`-based `composer.composerHeaders` index (Cursor 3.9.16); the new `composerHeaders` SQL table exists but is not yet gated on (`composer.composerHeaders.tableGateEnabled = false`)
 
 ## Alternative: context-only (not native sessions)
 

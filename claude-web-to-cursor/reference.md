@@ -5,8 +5,14 @@
 | Store | Path (macOS) | Holds |
 |-------|--------------|-------|
 | Global DB | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` | `composerData:*` and `bubbleId:*` in `cursorDiskKV`; `composer.composerHeaders` index in `ItemTable` |
-| Workspace DB | `.../workspaceStorage/<hash>/state.vscdb` | Open-tab composer IDs (`composer.composerData`); `composer.composerHeaders` index (Cursor 3.9.x reads this after migration) |
+| Workspace DB | `.../workspaceStorage/<hash>/state.vscdb` | Open-tab composer IDs (`composer.composerData`); `composer.composerHeaders` index |
 | Workspace map | `.../workspaceStorage/<hash>/workspace.json` | `{ "folder": "file:///..." }` — used to match `--dir` |
+
+## Cursor version compatibility
+
+Script targets Cursor **3.9.16** data format (`composerData._v: 6`, headers as `{bubbleId, type}`, bubbles with `editTrailContexts`/`multiFileLinterErrors`/`diffHistories`/`fileDiffTrajectories`).
+
+Older 3.9.x sessions in the DB use `_v: 3` composerData with an inline `conversation` array instead of `fullConversationHeadersOnly` + separate bubble keys — those are read-only legacy and not affected by import.
 
 Linux: `~/.config/Cursor/...`  
 Windows: `%APPDATA%\Cursor\...`
