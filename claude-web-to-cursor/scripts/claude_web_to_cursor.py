@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import platform
@@ -240,25 +241,31 @@ def _empty_rich_text() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Minimal Cursor context structure
+# Minimal Cursor context structure (3.9.16 bubble format)
 # ---------------------------------------------------------------------------
 
-_MINIMAL_CONTEXT = {
-    "composers": [], "selectedCommits": [], "selectedPullRequests": [],
-    "selectedImages": [], "selectedDocuments": [], "selectedVideos": [],
-    "folderSelections": [], "fileSelections": [], "selections": [],
-    "terminalSelections": [], "terminalFiles": [], "selectedDocs": [], "externalLinks": [],
-    "cursorRules": [], "cursorCommands": [], "gitPRDiffSelections": [],
-    "subagentSelections": [], "browserSelections": [], "extraContext": [],
+_MINIMAL_BUBBLE_CONTEXT = {
+    "editTrailContexts": [],
+    "notepads": [],
+    "quotes": [],
+    "selectedCommits": [],
+    "selectedPullRequests": [],
+    "selectedImages": [],
+    "useWeb": False,
+    "folderSelections": [],
+    "fileSelections": [],
+    "terminalFiles": [],
+    "selections": [],
+    "terminalSelections": [],
+    "selectedDocs": [],
+    "externalLinks": [],
     "mentions": {
-        "composers": {}, "selectedCommits": {}, "selectedPullRequests": {},
-        "gitDiff": [], "gitDiffFromBranchToMain": [], "selectedImages": {},
-        "folderSelections": {}, "fileSelections": {}, "terminalFiles": {},
-        "selections": {}, "terminalSelections": {}, "selectedDocs": {},
-        "externalLinks": {}, "cursorRules": {}, "cursorCommands": {},
-        "uiElementSelections": [], "consoleLogs": [], "gitPRDiffSelections": {},
-        "subagentSelections": {}, "browserSelections": {},
-        "diffHistory": [], "ideEditorsState": [],
+        "notepads": {}, "selections": {}, "fileSelections": {},
+        "folderSelections": {}, "selectedDocs": {}, "selectedCommits": {},
+        "selectedPullRequests": {}, "terminalSelections": {}, "terminalFiles": {},
+        "quotes": {}, "externalLinks": {}, "selectedImages": {},
+        "gitDiff": [], "gitDiffFromBranchToMain": [],
+        "usesCodebase": [], "useWeb": [],
     },
 }
 
@@ -334,12 +341,6 @@ def build_composer_data(
         headers.append({
             "bubbleId": bubble_id,
             "type": btype_int,
-            "grouping": {
-                "isRenderable": True,
-                "hasText": True,
-                "isShortPlainText": btype_int == 1 and len(text) < 100,
-            },
-            "createdAt": _iso_ts(msg_dt, now),
         })
 
         if btype_int == 1:
@@ -348,14 +349,21 @@ def build_composer_data(
                 "isAgentic": False,
                 "existedSubsequentTerminalCommand": False,
                 "existedPreviousTerminalCommand": False,
-                "attachedHumanChanges": False,
                 "tokenCount": {"inputTokens": 0, "outputTokens": 0},
-                "isRefunded": False, "unifiedMode": 2,
-                "createdAt": _iso_ts(msg_dt, now),
-                "conversationState": "~",
+                "isRefunded": False,
                 "richText": _make_rich_text(text),
                 "text": text,
-                "context": _MINIMAL_CONTEXT,
+                "context": copy.deepcopy(_MINIMAL_BUBBLE_CONTEXT),
+                "suggestedCodeBlocks": [],
+                "relevantFiles": [],
+                "editTrailContexts": [],
+                "multiFileLinterErrors": [],
+                "diffHistories": [],
+                "recentLocationsHistory": [],
+                "fileDiffTrajectories": [],
+                "todos": [],
+                "capabilities": [],
+                "capabilityContexts": [],
             }
         else:
             bubble = {
@@ -364,13 +372,19 @@ def build_composer_data(
                 "existedSubsequentTerminalCommand": False,
                 "existedPreviousTerminalCommand": False,
                 "tokenCount": {"inputTokens": 0, "outputTokens": 0},
-                "isRefunded": False, "unifiedMode": 2,
-                "createdAt": _iso_ts(msg_dt, now),
-                "conversationState": "~",
+                "isRefunded": False,
                 "text": text,
-                "toolResults": [], "suggestedCodeBlocks": [],
-                "relevantFiles": [], "capabilities": [],
-                "capabilityContexts": [], "todos": [],
+                "suggestedCodeBlocks": [],
+                "relevantFiles": [],
+                "editTrailContexts": [],
+                "multiFileLinterErrors": [],
+                "diffHistories": [],
+                "recentLocationsHistory": [],
+                "fileDiffTrajectories": [],
+                "toolResults": [],
+                "todos": [],
+                "capabilities": [],
+                "capabilityContexts": [],
             }
 
         bubbles.append((
@@ -390,7 +404,7 @@ def build_composer_data(
     }
 
     composer_data = {
-        "_v": 16,
+        "_v": 6,
         "composerId": composer_id,
         "richText": _empty_rich_text(),
         "hasLoaded": True,
@@ -398,10 +412,10 @@ def build_composer_data(
         "fullConversationHeadersOnly": headers,
         "conversationMap": {},
         "status": "completed",
-        "context": _MINIMAL_CONTEXT,
         "generatingBubbleIds": [],
         "isReadingLongFile": False,
         "codeBlockData": {},
+        "originalModelLines": {},
         "newlyCreatedFiles": [],
         "newlyCreatedFolders": [],
         "lastUpdatedAt": updated_ms,
@@ -410,6 +424,7 @@ def build_composer_data(
         "hasChangedContext": False,
         "capabilities": [],
         "name": name,
+        "codebaseSearchSettings": {},
         "isFileListExpanded": False,
         "unifiedMode": "agent",
         "forceMode": "edit",
@@ -418,57 +433,26 @@ def build_composer_data(
         "subComposerIds": [],
         "capabilityContexts": [],
         "todos": [],
+        "isTodoListExpanded": False,
+        "isQueueExpanded": False,
+        "reviewModeDisabled": False,
         "hasUnreadMessages": False,
+        "gitHubPromptDismissed": False,
         "isAgentic": False,
         "workspaceIdentifier": ws_id_obj,
         "subtitle": subtitle,
         "filesChangedCount": 0,
         "totalLinesAdded": 0,
         "totalLinesRemoved": 0,
-        # Fields required by Cursor 3.9+ to include the session in the sidebar
         "isDraft": False,
         "isSpec": False,
         "isProject": False,
         "isBestOfNSubcomposer": False,
-        "isBestOfNParent": False,
         "isWorktree": False,
         "worktreeStartedReadOnly": False,
-        "isCreatingWorktree": False,
-        "isApplyingWorktree": False,
-        "isUndoingWorktree": False,
-        "pendingCreateWorktree": False,
-        "applied": False,
-        "isNAL": False,
-        "isSpecSubagentDone": False,
-        "isContinuationInProgress": False,
-        "isQueueExpanded": False,
-        "activeTabsShouldBeReactive": False,
-        "canvasPillCollapsed": False,
-        "browserChipManuallyDisabled": False,
-        "browserChipManuallyEnabled": False,
-        "gitHubPromptDismissed": False,
-        "planModeSuggestionUsed": False,
-        "debugModeSuggestionUsed": False,
-        "restrictAgentModeSwitching": False,
-        "applyAgentBackendTypeRestrictions": False,
-        "stopHookLoopCount": 0,
-        "contextUsagePercent": 0,
-        "contextTokensUsed": 0,
-        "contextTokenLimit": 0,
-        "latestChatGenerationUUID": "",
-        "speculativeSummarizationEncryptionKey": "",
-        "blobEncryptionKey": "",
-        "agentBackend": "",
-        "conversationState": "~",
-        "originalFileStates": {},
-        "addedFiles": 0,
-        "removedFiles": 0,
-        "queueItems": [],
-        "subagentComposerIds": [],
         "trackedGitRepos": [],
-        "promptTokenBreakdown": {},
-        "promptContextUsageTree": {},
-        "modelConfig": {},
+        "contextUsagePercent": 0,
+        "latestChatGenerationUUID": "",
         # Used by this script to identify legacy orphan imports (not read by Cursor).
         "_claudeSourceUuid": raw.get("uuid") or "",
         "_claudeSourcePath": str(project_dir.resolve()),
@@ -546,7 +530,7 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
 
     with sqlite3.connect(str(global_db), timeout=10) as conn:
         for raw in conversations:
-            name = (raw.get("name") or "Claude chat").strip()
+            name = (raw.get("name") or "Claude chat").strip() or "Claude chat"
             source_uuid = raw.get("uuid") or ""
 
             # Deterministic composer_id scoped to (project, conversation) so that the same
@@ -702,7 +686,7 @@ def write_to_cursor(conversations: list[dict], project_dir: Path) -> tuple[int, 
             "Ensure Cursor is fully quit and retry; the same session IDs will be reused automatically.",
             file=sys.stderr,
         )
-        return 0, phase1_fail + n_staged
+        return 0, phase1_fail
 
     # Phase 2b: all workspace updates succeeded — commit global composer.composerHeaders atomically.
     with sqlite3.connect(str(global_db), timeout=10) as conn:
